@@ -137,6 +137,42 @@ class MnaEvent(_Base):
         return _parse_date(v)
 
 
+class EtfProfile(_Base):
+    """Subset of FMP's /etf/info (or fallback /profile) fields we use.
+
+    Field aliases tolerate both stable-namespace and v3 spellings of expense
+    ratio / AUM.
+    """
+
+    symbol: str
+    name: str | None = None
+    asset_class: str | None = Field(default=None, alias="assetClass")
+    expense_ratio: float | None = Field(default=None, alias="expenseRatio")
+    aum: float | None = None
+    avg_volume: float | None = Field(default=None, alias="avgVolume")
+    inception_date: date | None = Field(default=None, alias="inceptionDate")
+    sector: str | None = None
+    exchange: str | None = None
+    exchange_short_name: str | None = Field(default=None, alias="exchangeShortName")
+    country: str | None = None
+
+    @field_validator("inception_date", mode="before")
+    @classmethod
+    def _date(cls, v: Any) -> Any:
+        return _parse_date(v)
+
+
+class EtfHolding(_Base):
+    """A single line of an ETF's holdings panel."""
+
+    symbol: str  # the ETF
+    asset: str | None = None  # underlying ticker
+    name: str | None = None
+    weight_percentage: float | None = Field(default=None, alias="weightPercentage")
+    market_value: float | None = Field(default=None, alias="marketValue")
+    shares_number: float | None = Field(default=None, alias="sharesNumber")
+
+
 class SP500Membership(_Base):
     """A row from /historical-sp-500. FMP returns one event per add/remove."""
 

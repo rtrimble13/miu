@@ -42,6 +42,10 @@ class MiuUniverseError(MiuError):
     """Universe construction failure."""
 
 
+class MiuOptimizerError(MiuError):
+    """Composite optimizer failed (infeasible bounds, non-convergence, etc.)."""
+
+
 def _redact(params: dict[str, Any]) -> dict[str, Any]:
     return {k: ("***" if k.lower() in {"apikey", "api_key"} else v) for k, v in params.items()}
 
@@ -67,10 +71,13 @@ class Settings:
         cfg = _read_config_file(config_file or DEFAULT_CONFIG_FILE)
         resolved_key = api_key or os.environ.get("FMP_API_KEY") or cfg.get("api_key")
         resolved_cache = cache_dir or _coerce_path(cfg.get("cache_dir")) or DEFAULT_CACHE_DIR
+        resolved_base_url = (
+            os.environ.get("FMP_BASE_URL") or cfg.get("base_url") or FMP_BASE_URL
+        )
         return cls(
             api_key=resolved_key,
             cache_dir=resolved_cache,
-            base_url=cfg.get("base_url", FMP_BASE_URL),
+            base_url=resolved_base_url,
             verbose=verbose,
             log_format=log_format,
         )

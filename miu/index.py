@@ -322,6 +322,18 @@ class IndexEngine:
             last = self._price_at(eid, delisting - timedelta(days=1)) or p_prev
             return (last / p_prev) - 1.0
         if delisting is not None and day >= delisting:
+            mna = self.mna_resolutions.get(eid)
+            if mna and mna.acquirer_id and mna.ratio is not None:
+                # Post-delisting: the converted position tracks the acquirer.
+                p_acq_prev = self._price_at(mna.acquirer_id, prev_day)
+                p_acq_now = self._price_at(mna.acquirer_id, day)
+                if (
+                    p_acq_prev is not None
+                    and p_acq_prev > 0
+                    and p_acq_now is not None
+                    and p_acq_now > 0
+                ):
+                    return (p_acq_now / p_acq_prev) - 1.0
             return 0.0  # held flat (already resolved on the delisting day)
 
         p_now = self._price_at(eid, day)

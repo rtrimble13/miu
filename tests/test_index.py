@@ -211,6 +211,41 @@ def test_stock_for_stock_mna_redistributes_via_acquirer_price() -> None:
     assert math.isclose(day_return, 0.25, rel_tol=1e-6, abs_tol=1e-6)
 
 
+def test_stock_for_stock_mna_tracks_acquirer_post_delisting() -> None:
+    """After delisting, the converted target position must continue to track
+    the acquirer's return until the next rebalance — not return 0."""
+    cal = _calendar(30)
+    delisting = cal[10]
+    constituents = [_const("ACQ"), _const("TGT", delisting=delisting)]
+    prices = {
+        # Acquirer: flat at 200 before delisting, then rises 1% per day after.
+        "ACQ": {
+            **{d: 200.0 for d in cal[:10]},
+            **{d: 200.0 * (1.01 ** (i + 1)) for i, d in enumerate(cal[10:])},
+        },
+        # Target: flat at 100 until delisting (no quotes after).
+        "TGT": {d: 100.0 for d in cal[:10]},
+    }
+    mcaps = {eid: {d: 1e9 for d in cal} for eid in ("ACQ", "TGT")}
+    mcaps["TGT"] = {d: 1e9 for d in cal[:10]}
+    # 1 TGT share converts to 0.5 ACQ shares.
+    mna = {"TGT": MnaResolution(acquirer_id="ACQ", ratio=0.5)}
+    config = EngineConfig(
+        weighting="equal", start=cal[0], end=cal[-1], rebalance="none", base_value=1000.0
+    )
+    result = IndexEngine(
+        constituents, prices, mcaps, config, mna_resolutions=mna
+    ).run()
+    post = result.series[result.series["date"] > delisting]
+    # Both the direct ACQ position and the converted TGT position track ACQ,
+    # so the portfolio return each day must be ~+1% (the acquirer's daily gain).
+    for r in post["daily_return"]:
+        assert math.isclose(float(r), 0.01, rel_tol=1e-4), (
+            f"post-delisting return {r} should track acquirer's 1% gain"
+        )
+
+
+
 def test_min_market_cap_excludes_small() -> None:
     cal = _calendar(20)
     constituents = [_const("BIG"), _const("SMALL")]

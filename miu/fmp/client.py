@@ -135,4 +135,11 @@ class FmpClient:
         # endpoint parser doesn't silently swallow `[{"Error Message": ...}]`.
         if isinstance(body, dict) and "Error Message" in body:
             raise MiuApiError(endpoint, params, resp.status_code, str(body["Error Message"]))
+        if (
+            isinstance(body, list)
+            and body
+            and isinstance(body[0], dict)
+            and "Error Message" in body[0]
+        ):
+            raise MiuApiError(endpoint, params, resp.status_code, str(body[0]["Error Message"]))
         return body

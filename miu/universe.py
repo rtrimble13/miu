@@ -50,17 +50,17 @@ class Constituent(BaseModel):
 
     def ticker_at(self, when: date) -> str:
         """Return the symbol active at `when`. Falls back to the most recent."""
-        for span in self.ticker_history:
+        for span in reversed(self.ticker_history):
             start = span.start or date.min
             end = span.end or date.max
             if start <= when <= end:
                 return span.ticker
-        # Fallback: most recent span by end date
+        # Fallback: most recent span.
         latest = max(
-            self.ticker_history,
-            key=lambda s: (s.end or date.max, s.start or date.min),
+            enumerate(self.ticker_history),
+            key=lambda item: (item[1].end or date.max, item[1].start or date.min, item[0]),
         )
-        return latest.ticker
+        return latest[1].ticker
 
     @property
     def current_ticker(self) -> str:

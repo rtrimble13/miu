@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 from pathlib import Path
 
 from typer.testing import CliRunner
 
-from miu.cli import app
+from miu.cli import app, build
 
 
 def test_version() -> None:
@@ -105,3 +106,8 @@ def test_cache_clear(tmp_path: Path) -> None:
     result = CliRunner().invoke(app, ["cache", "clear", "--cache-dir", str(cache)])
     assert result.exit_code == 0
     assert "removed" in result.output
+
+
+def test_build_cache_dir_flag_defaults_to_none() -> None:
+    sig = inspect.signature(build)
+    assert sig.parameters["cache_dir"].default.default is None

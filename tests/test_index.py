@@ -109,19 +109,24 @@ def test_quarterly_rebalance_count() -> None:
 
 
 def test_drift_between_rebalances_keeps_membership() -> None:
-    cal = _calendar(40)
+    cal = _calendar(3)
     constituents = [_const("A"), _const("B")]
     prices = {
-        "A": {d: 100.0 + i for i, d in enumerate(cal)},
-        "B": {d: 100.0 for d in cal},
+        "A": {cal[0]: 100.0, cal[1]: 200.0, cal[2]: 300.0},
+        "B": {cal[0]: 100.0, cal[1]: 100.0, cal[2]: 50.0},
     }
     mcaps = {"A": {d: 1e9 for d in cal}, "B": {d: 1e9 for d in cal}}
     config = EngineConfig(weighting="equal", start=cal[0], end=cal[-1], rebalance="none")
     result = IndexEngine(constituents, prices, mcaps, config).run()
-    # Only one rebalance event, at the start.
     rebal_rows = result.constituents[result.constituents["is_rebalance_date"]]
+    non_rebal_rows = result.constituents[~result.constituents["is_rebalance_date"]]
     assert rebal_rows["date"].nunique() == 1
     assert rebal_rows["date"].iloc[0] == cal[0]
+    assert non_rebal_rows["date"].nunique() == 2
+    assert set(result.constituents["date"]) == set(cal)
+    # Day 3 return must use day-2 drifted weights (A outperformed on day 2).
+    day3_return = float(result.series.loc[result.series["date"] == cal[2], "daily_return"].iloc[0])
+    assert day3_return > 0.15
 
 
 def test_min_market_cap_excludes_small() -> None:

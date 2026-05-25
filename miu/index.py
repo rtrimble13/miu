@@ -105,7 +105,6 @@ class IndexEngine:
         const_rows: list[dict] = []
 
         level = self.config.base_value
-        prev_level = level
         snapshot: _Snapshot | None = None
         prev_day: date | None = None
 
@@ -113,14 +112,18 @@ class IndexEngine:
             is_rebal = day in rebal_days or snapshot is None
             if is_rebal:
                 snapshot = self._rebalance(day)
-                for eid, w in snapshot.weights.items():
+
+            day_weights: Weights = {}
+            if snapshot is not None and snapshot.weights:
+                day_weights = snapshot.weights if is_rebal else self._drifted_weights(snapshot, day)
+                for eid, w in day_weights.items():
                     const_rows.append(
                         {
                             "date": day,
                             "entity_id": eid,
                             "ticker": self._by_id[eid].ticker_at(day),
                             "weight": w,
-                            "is_rebalance_date": True,
+                            "is_rebalance_date": is_rebal,
                         }
                     )
 
@@ -144,10 +147,9 @@ class IndexEngine:
                         "date": day,
                         "index_level": level,
                         "daily_return": 0.0,
-                        "n_constituents": len(snapshot.weights),
+                        "n_constituents": sum(1 for w in day_weights.values() if w > 0),
                     }
                 )
-                snapshot.ref_prices = self._prices_on(day, snapshot.constituents)
                 prev_day = day
                 continue
 
@@ -158,16 +160,14 @@ class IndexEngine:
                     "date": day,
                     "index_level": level,
                     "daily_return": day_return,
-                    "n_constituents": sum(1 for w in snapshot.weights.values() if w > 0),
+                    "n_constituents": sum(1 for w in day_weights.values() if w > 0),
                 }
             )
-            prev_level = level
             prev_day = day
 
         series_df = pd.DataFrame(series_rows)
         const_df = pd.DataFrame(const_rows)
         summary = _summarize(series_df, const_df, self.constituents, self.config)
-        _ = prev_level  # silence unused
         return IndexResult(series=series_df, constituents=const_df, summary=summary)
 
     # ----- internals -----
@@ -274,12 +274,32 @@ class IndexEngine:
         Applies M&A resolution at the delisting date.
         """
         ret = 0.0
-        for eid, weight in snap.weights.items():
+        drifted = self._drifted_weights(snap, prev_day)
+        for eid, weight in drifted.items():
             if weight <= 0:
                 continue
             r = self._security_return(eid, prev_day, day)
             ret += weight * r
         return ret
+
+    def _drifted_weights(self, snap: _Snapshot, day: date) -> Weights:
+        values: dict[str, float] = {}
+        for eid, weight in snap.weights.items():
+            if weight <= 0:
+                continue
+            p_ref = snap.ref_prices.get(eid)
+            if p_ref is None or p_ref <= 0:
+                continue
+            p_day = self._price_at(eid, day)
+            if p_day is None or p_day <= 0:
+                continue
+            # Normalize to an arbitrary base portfolio value of 1.0.
+            shares = weight / p_ref
+            values[eid] = shares * p_day
+        total = sum(values.values())
+        if total <= 0:
+            return {eid: w for eid, w in snap.weights.items() if w > 0}
+        return {eid: val / total for eid, val in values.items()}
 
     def _security_return(self, eid: str, prev_day: date, day: date) -> float:
         c = self._by_id.get(eid)

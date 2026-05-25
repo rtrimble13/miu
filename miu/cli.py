@@ -97,7 +97,7 @@ def build(
         "--include-delisted/--exclude-delisted",
         help="Default includes delisted names. --exclude-delisted is the survivorship-biased mode.",
     ),
-    cache_dir: Path = typer.Option(DEFAULT_CACHE_DIR, "--cache-dir"),
+    cache_dir: Path | None = typer.Option(None, "--cache-dir"),
     api_key: str | None = typer.Option(None, "--api-key"),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
     log_format: str = typer.Option("human", "--log-format", help="human | json"),

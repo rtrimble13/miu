@@ -1,7 +1,7 @@
 """Configuration, settings, and shared error types.
 
 Precedence (spec §9): CLI flags > env vars > ~/.miu/config.toml > defaults.
-CLI flags don't live here; they layer on top in cli.py via Settings.merge_cli().
+CLI flags don't live here; cli.py passes CLI values into Settings.load(...).
 """
 
 from __future__ import annotations

@@ -12,7 +12,7 @@ import respx
 from miu.config import Settings
 from miu.fmp.client import FmpClient
 from miu.fmp.models import SymbolChange
-from miu.universe import UniverseRequest, _build_chain_map, build_universe
+from miu.universe import Constituent, TickerSpan, UniverseRequest, _build_chain_map, build_universe
 
 
 def _settings(tmp_path: Path) -> Settings:
@@ -40,6 +40,17 @@ def test_build_chain_map_breaks_cycles() -> None:
     # No infinite loop; both map to a terminal in the cycle.
     assert chain["A"] in {"A", "B"}
     assert chain["B"] in {"A", "B"}
+
+
+def test_ticker_at_prefers_most_recent_overlapping_span() -> None:
+    c = Constituent(
+        entity_id="META",
+        ticker_history=[
+            TickerSpan(ticker="FB", start=None, end=None),
+            TickerSpan(ticker="META", start=None, end=None),
+        ],
+    )
+    assert c.ticker_at(date.today()) == "META"
 
 
 @pytest.mark.asyncio

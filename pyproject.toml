@@ -70,6 +70,11 @@ target-version = "py311"
 select = ["E", "F", "I", "B", "UP", "W"]
 ignore = ["E501"]
 
+[tool.ruff.lint.per-file-ignores]
+# Typer requires `typer.Option(...)` as parameter defaults — that pattern is its
+# entire DSL, so B008 is a false positive here.
+"miu/cli.py" = ["B008"]
+
 [tool.coverage.run]
 branch = true
 source = ["miu"]

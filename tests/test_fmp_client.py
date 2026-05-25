@@ -74,6 +74,19 @@ async def test_get_redacts_api_key_in_error(client_settings: Settings) -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_raises_on_error_message_envelope(client_settings: Settings) -> None:
+    """FMP sometimes returns HTTP 200 with `{"Error Message": ...}`; surface as failure."""
+    async with respx.mock(base_url="https://example.test", assert_all_called=False) as mock:
+        mock.get("/bogus").mock(
+            return_value=httpx.Response(200, json={"Error Message": "Invalid API KEY."})
+        )
+        async with FmpClient(client_settings) as client:
+            with pytest.raises(MiuApiError) as exc_info:
+                await client.get("/bogus", {}, ttl=int(TTL.SNAPSHOT))
+    assert "Invalid API KEY" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
 async def test_get_rate_limit_header_triggers_sleep(monkeypatch, client_settings: Settings) -> None:
     sleeps: list[float] = []
 

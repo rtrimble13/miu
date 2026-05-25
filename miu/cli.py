@@ -24,7 +24,8 @@ from miu.config import (
 )
 from miu.fmp import endpoints as ep
 from miu.fmp.client import FmpClient
-from miu.index import EngineConfig, IndexEngine
+from miu.fmp.models import MnaEvent
+from miu.index import EngineConfig, IndexEngine, MnaResolution
 from miu.output import print_summary, write_csv, write_json
 from miu.universe import Constituent, UniverseRequest, build_universe, known_sectors
 
@@ -191,6 +192,9 @@ async def _build_async(
 
         prices, market_caps = await _load_panels(client, constituents, start, end)
 
+        mna_events = await ep.mergers_acquisitions(client, start=start, end=end)
+        mna_resolutions = _resolve_mna(mna_events, constituents, prices)
+
         config = EngineConfig(
             weighting=weighting,
             start=start,
@@ -202,7 +206,9 @@ async def _build_async(
             sector=sector,
             industry=industry,
         )
-        engine = IndexEngine(constituents, prices, market_caps, config)
+        engine = IndexEngine(
+            constituents, prices, market_caps, config, mna_resolutions=mna_resolutions
+        )
         result = engine.run()
 
     if output_format == "csv":
@@ -250,6 +256,64 @@ async def _load_panels(
 
     await _aio.gather(*(load_one(c) for c in constituents))
     return prices, market_caps
+
+
+def _resolve_mna(
+    events: list[MnaEvent],
+    constituents: list[Constituent],
+    prices: dict[str, dict[date, float]],
+) -> dict[str, MnaResolution]:
+    """Build entity_id -> MnaResolution from FMP's /mergers-acquisitions feed.
+
+    FMP's M&A response carries deal metadata (target, acquirer, dates,
+    deal_type / consideration string) but not the cash terms or share-exchange
+    ratio. We can therefore resolve stock-for-stock deals using a price-ratio
+    proxy at the deal's transaction date (1 target share ≈ (p_target/p_acq)
+    acquirer shares), provided the acquirer is itself a known entity in the
+    universe. Cash and mixed deals are left without a resolution; the engine
+    falls back to last-traded price in that case.
+    """
+    ticker_to_entity: dict[str, str] = {}
+    for c in constituents:
+        for span in c.ticker_history:
+            ticker_to_entity[span.ticker.upper()] = c.entity_id
+
+    out: dict[str, MnaResolution] = {}
+    for ev in events:
+        target_sym = (ev.targeted_symbol or "").upper()
+        if not target_sym:
+            continue
+        target_id = ticker_to_entity.get(target_sym)
+        if not target_id or target_id in out:
+            continue
+        consid = ((ev.consideration or "") + " " + (ev.deal_type or "")).lower()
+        is_stock = "stock" in consid or "share" in consid or "exchange" in consid
+        if not is_stock:
+            continue
+        acquirer_sym = (ev.symbol or "").upper()
+        acquirer_id = ticker_to_entity.get(acquirer_sym)
+        if not acquirer_id or acquirer_id == target_id:
+            continue
+        deal_date = ev.transaction_date or ev.acceptance_time
+        if deal_date is None:
+            continue
+        p_target = _price_at(prices.get(target_id, {}), deal_date)
+        p_acquirer = _price_at(prices.get(acquirer_id, {}), deal_date)
+        if not p_target or not p_acquirer or p_acquirer <= 0:
+            continue
+        ratio = p_target / p_acquirer
+        out[target_id] = MnaResolution(acquirer_id=acquirer_id, ratio=ratio)
+    return out
+
+
+def _price_at(series: dict[date, float], when: date) -> float | None:
+    if not series:
+        return None
+    best: tuple[date, float] | None = None
+    for d, v in series.items():
+        if d <= when and (best is None or d > best[0]):
+            best = (d, v)
+    return None if best is None else best[1]
 
 
 async def _validate_sector(client: FmpClient, sector: str | None, industry: str | None) -> None:
@@ -316,7 +380,7 @@ def validate(
         help="Reference S&P 500 Health Care daily levels CSV.",
     ),
 ) -> None:
-    """Reconstruct S&P 500 Health Care and compare to a bundled reference."""
+    """Self-consistency canary against a bundled (synthetic) reference series."""
     settings = Settings.load(api_key=api_key, cache_dir=cache_dir)
     try:
         te = asyncio.run(_validate_async(settings, reference))
@@ -347,6 +411,8 @@ async def _validate_async(settings: Settings, reference: Path) -> float:
         )
         constituents = await build_universe(req, client)
         prices, market_caps = await _load_panels(client, constituents, req.start, req.end)
+        mna_events = await ep.mergers_acquisitions(client, start=req.start, end=req.end)
+        mna_resolutions = _resolve_mna(mna_events, constituents, prices)
         engine = IndexEngine(
             constituents,
             prices,
@@ -359,6 +425,7 @@ async def _validate_async(settings: Settings, reference: Path) -> float:
                 base_value=1000.0,
                 sector="Healthcare",
             ),
+            mna_resolutions=mna_resolutions,
         )
         result = engine.run()
 

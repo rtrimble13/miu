@@ -109,13 +109,32 @@ class IndexEngine:
         prev_day: date | None = None
 
         for day in cal:
-            is_rebal = day in rebal_days or snapshot is None
-            if is_rebal:
+            # `snapshot` here is the basket held entering today. On the
+            # bootstrap day we have no prior basket; otherwise it's whatever
+            # was set at the last rebalance.
+            bootstrap = snapshot is None
+            is_rebal_today = bootstrap or (day in rebal_days)
+
+            # Compute today's return against the OLD basket — the one held
+            # entering the day — BEFORE any EOD rebalance. On bootstrap the
+            # return is zero (nothing to mark against).
+            if not bootstrap and snapshot is not None and snapshot.weights and prev_day is not None:
+                day_return = self._period_return(snapshot, prev_day, day)
+            else:
+                day_return = 0.0
+
+            # Apply EOD rebalance (if any) AFTER the return is locked in.
+            if is_rebal_today:
                 snapshot = self._rebalance(day)
 
-            day_weights: Weights = {}
+            # Emit constituent rows. On a rebalance day, show the freshly
+            # selected basket; on a non-rebalance day, show the drifted basket.
             if snapshot is not None and snapshot.weights:
-                day_weights = snapshot.weights if is_rebal else self._drifted_weights(snapshot, day)
+                day_weights = (
+                    snapshot.weights
+                    if is_rebal_today
+                    else self._drifted_weights(snapshot, day)
+                )
                 for eid, w in day_weights.items():
                     const_rows.append(
                         {
@@ -123,44 +142,21 @@ class IndexEngine:
                             "entity_id": eid,
                             "ticker": self._by_id[eid].ticker_at(day),
                             "weight": w,
-                            "is_rebalance_date": is_rebal,
+                            "is_rebalance_date": is_rebal_today,
                         }
                     )
+                n_const = sum(1 for w in day_weights.values() if w > 0)
+            else:
+                n_const = 0
 
-            if snapshot is None or not snapshot.weights:
-                # No eligible names yet — hold level flat.
-                series_rows.append(
-                    {
-                        "date": day,
-                        "index_level": level,
-                        "daily_return": 0.0,
-                        "n_constituents": 0,
-                    }
-                )
-                prev_day = day
-                continue
-
-            if prev_day is None:
-                # First day with eligible names: anchor level, no return.
-                series_rows.append(
-                    {
-                        "date": day,
-                        "index_level": level,
-                        "daily_return": 0.0,
-                        "n_constituents": sum(1 for w in day_weights.values() if w > 0),
-                    }
-                )
-                prev_day = day
-                continue
-
-            day_return = self._period_return(snapshot, prev_day, day)
-            level = level * (1.0 + day_return)
+            if prev_day is not None:
+                level = level * (1.0 + day_return)
             series_rows.append(
                 {
                     "date": day,
                     "index_level": level,
                     "daily_return": day_return,
-                    "n_constituents": sum(1 for w in day_weights.values() if w > 0),
+                    "n_constituents": n_const,
                 }
             )
             prev_day = day
@@ -200,12 +196,13 @@ class IndexEngine:
             market_caps=mcaps_t1,
             as_of=day,
         )
-        ref_prices = self._prices_on(day, eligible)
+        # Drift's "purchase basis" must share an as-of with the weights, else
+        # the basket implies inconsistent share counts on subsequent days.
         snap = _Snapshot(
             rebalance_date=day,
             constituents=eligible,
             weights=weights,
-            ref_prices=ref_prices,
+            ref_prices=dict(prices_t1),
         )
         return snap
 
@@ -315,6 +312,12 @@ class IndexEngine:
             mna = self.mna_resolutions.get(eid)
             if mna and mna.cash_value is not None:
                 return (mna.cash_value / p_prev) - 1.0
+            if mna and mna.acquirer_id and mna.ratio is not None:
+                # Stock-for-stock: terminal value = ratio shares of the
+                # acquirer marked at acquirer's price on the delisting day.
+                p_acq = self._price_at(mna.acquirer_id, day)
+                if p_acq is not None and p_acq > 0:
+                    return ((mna.ratio * p_acq) / p_prev) - 1.0
             # Fallback: last observed price within window
             last = self._price_at(eid, delisting - timedelta(days=1)) or p_prev
             return (last / p_prev) - 1.0

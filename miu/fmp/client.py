@@ -126,6 +126,13 @@ class FmpClient:
             )
 
         try:
-            return resp.json()
+            body = resp.json()
         except ValueError as exc:
             raise MiuApiError(endpoint, params, resp.status_code, f"non-JSON body: {exc}") from exc
+
+        # FMP occasionally returns HTTP 200 with a JSON error envelope rather
+        # than the expected list/object. Surface it as a hard failure so the
+        # endpoint parser doesn't silently swallow `[{"Error Message": ...}]`.
+        if isinstance(body, dict) and "Error Message" in body:
+            raise MiuApiError(endpoint, params, resp.status_code, str(body["Error Message"]))
+        return body

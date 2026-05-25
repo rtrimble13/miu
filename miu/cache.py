@@ -10,6 +10,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import os
 import time
 from dataclasses import dataclass
 from enum import Enum
@@ -83,11 +84,17 @@ class DiskCache:
 
     def set(self, endpoint: str, params: dict[str, Any], payload: Any, ttl: int) -> None:
         body_path, meta_path = self._paths(endpoint, params)
-        with gzip.open(body_path, "wt") as fh:
+        # Write body + meta to sibling .tmp files first, then atomically
+        # rename so a crash mid-write cannot leave a half-written entry.
+        body_tmp = body_path.with_suffix(body_path.suffix + ".tmp")
+        meta_tmp = meta_path.with_suffix(meta_path.suffix + ".tmp")
+        with gzip.open(body_tmp, "wt") as fh:
             json.dump(payload, fh, default=str)
-        meta_path.write_text(
+        meta_tmp.write_text(
             json.dumps({"fetched_at": time.time(), "ttl_seconds": int(ttl)}, separators=(",", ":"))
         )
+        os.replace(body_tmp, body_path)
+        os.replace(meta_tmp, meta_path)
 
     def clear(self) -> int:
         n = 0

@@ -122,6 +122,7 @@ async def build_universe(
 
     changes = await ep.symbol_changes(client)
     chain_map = _build_chain_map(changes)
+    chain_dates = _build_chain_dates(changes)
 
     matched_symbols = _collect_matches(
         current,
@@ -138,6 +139,7 @@ async def build_universe(
         delisted,
         {**delisted_profiles, **sp_profiles},
         chain_map,
+        chain_dates,
     )
 
     cache.set("universe", cache_key, [c.model_dump(mode="json") for c in constituents], ttl=7 * 86400)
@@ -258,6 +260,13 @@ def _build_chain_map(changes: list[SymbolChange]) -> dict[str, str]:
     return resolved
 
 
+def _build_chain_dates(changes: list[SymbolChange]) -> dict[tuple[str, str], date]:
+    """(old_symbol, new_symbol) -> effective date of the rename."""
+    return {
+        (c.old_symbol.upper(), c.new_symbol.upper()): c.date for c in changes if c.date
+    }
+
+
 def _collect_matches(
     current: list[ScreenerRow],
     delisted: list[DelistedRow],
@@ -286,6 +295,7 @@ def _build_constituents(
     delisted: list[DelistedRow],
     profiles: dict[str, Profile],
     chain_map: dict[str, str],
+    chain_dates: dict[tuple[str, str], date],
 ) -> list[Constituent]:
     current_by_sym = {r.symbol.upper(): r for r in current}
     delisted_by_sym = {d.symbol.upper(): d for d in delisted}
@@ -298,7 +308,7 @@ def _build_constituents(
 
     constituents: list[Constituent] = []
     for terminal, group in sorted(grouped.items()):
-        ticker_history = _make_history(group, chain_map, delisted_by_sym)
+        ticker_history = _make_history(group, chain_map, chain_dates, delisted_by_sym)
         # Pick the most-informative profile (prefer current, fall back to any).
         profile = profiles.get(terminal)
         if profile is None:
@@ -338,12 +348,16 @@ def _build_constituents(
 
 
 def _make_history(
-    group: list[str], chain_map: dict[str, str], delisted_by_sym: dict[str, DelistedRow]
+    group: list[str],
+    chain_map: dict[str, str],
+    chain_dates: dict[tuple[str, str], date],
+    delisted_by_sym: dict[str, DelistedRow],
 ) -> list[TickerSpan]:
     """Order the group by symbol-change chain and assign date spans."""
-    inverse: dict[str, str] = {old: new for old, new in chain_map.items() if new in group or old in group}
+    # A chain "start" is a symbol that no other in-group symbol renames TO.
+    incoming = {new for old, new in chain_map.items() if old in group and new in group}
     chain: list[str] = []
-    starts = [s for s in group if s not in inverse]
+    starts = sorted(s for s in group if s not in incoming)
     if not starts:
         starts = sorted(group)
     seen: set[str] = set()
@@ -359,15 +373,17 @@ def _make_history(
             chain.append(s)
     spans: list[TickerSpan] = []
     for i, sym in enumerate(chain):
+        # Cutover date to the *next* ticker in the chain bounds this span's
+        # end and the next span's start. For the last symbol, the delisted
+        # date (if any) closes the span.
+        start = chain_dates.get((chain[i - 1], sym)) if i > 0 else None
         end_date: date | None = None
         if i + 1 < len(chain):
-            # We don't have a precise change date here; leave end open and let the
-            # next span's start (also unknown) act as the implicit cutover.
-            end_date = None
+            end_date = chain_dates.get((sym, chain[i + 1]))
         d = delisted_by_sym.get(sym)
         if d and d.delisted_date:
             end_date = d.delisted_date
-        spans.append(TickerSpan(ticker=sym, start=None, end=end_date))
+        spans.append(TickerSpan(ticker=sym, start=start, end=end_date))
     return spans
 
 

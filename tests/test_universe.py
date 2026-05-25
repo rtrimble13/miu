@@ -12,7 +12,15 @@ import respx
 from miu.config import Settings
 from miu.fmp.client import FmpClient
 from miu.fmp.models import SymbolChange
-from miu.universe import Constituent, TickerSpan, UniverseRequest, _build_chain_map, build_universe
+from miu.universe import (
+    Constituent,
+    TickerSpan,
+    UniverseRequest,
+    _build_chain_dates,
+    _build_chain_map,
+    _build_constituents,
+    build_universe,
+)
 
 
 def _settings(tmp_path: Path) -> Settings:
@@ -51,6 +59,58 @@ def test_ticker_at_prefers_most_recent_overlapping_span() -> None:
         ],
     )
     assert c.ticker_at(date.today()) == "META"
+
+
+def test_ticker_at_is_date_aware_when_spans_have_bounds() -> None:
+    """After threading symbol-change dates, ticker_at(when) must return the
+    symbol that was active on `when`, not the most recent one."""
+    cutover = date(2022, 6, 9)
+    c = Constituent(
+        entity_id="META",
+        ticker_history=[
+            TickerSpan(ticker="FB", start=None, end=cutover),
+            TickerSpan(ticker="META", start=cutover, end=None),
+        ],
+    )
+    assert c.ticker_at(date(2020, 1, 1)) == "FB"
+    assert c.ticker_at(date(2024, 1, 1)) == "META"
+
+
+def test_build_constituents_assigns_real_span_bounds_from_chain_dates() -> None:
+    """_make_history must consume chain_dates so spans get real (start, end)."""
+    from miu.fmp.models import ScreenerRow
+
+    changes = [
+        SymbolChange(date=date(2022, 6, 9), name="FB", oldSymbol="FB", newSymbol="META"),
+    ]
+    chain_map = _build_chain_map(changes)
+    chain_dates = _build_chain_dates(changes)
+    current = [
+        ScreenerRow(
+            symbol="META",
+            companyName="Meta Platforms",
+            marketCap=1e12,
+            sector="Technology",
+            industry="Internet",
+            exchangeShortName="NASDAQ",
+            isActivelyTrading=True,
+        )
+    ]
+    constituents = _build_constituents(
+        matched={"FB", "META"},
+        current=current,
+        delisted=[],
+        profiles={},
+        chain_map=chain_map,
+        chain_dates=chain_dates,
+    )
+    assert len(constituents) == 1
+    c = constituents[0]
+    by_ticker = {span.ticker: span for span in c.ticker_history}
+    assert by_ticker["FB"].end == date(2022, 6, 9)
+    assert by_ticker["META"].start == date(2022, 6, 9)
+    assert c.ticker_at(date(2018, 1, 1)) == "FB"
+    assert c.ticker_at(date(2023, 1, 1)) == "META"
 
 
 @pytest.mark.asyncio

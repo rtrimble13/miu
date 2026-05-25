@@ -17,6 +17,8 @@ from miu.config import MiuApiError
 from miu.fmp.client import FmpClient
 from miu.fmp.models import (
     DelistedRow,
+    EtfHolding,
+    EtfProfile,
     HistoricalMarketCap,
     HistoricalPrice,
     MnaEvent,
@@ -156,3 +158,75 @@ async def mergers_acquisitions(
 async def historical_sp500(client: FmpClient) -> list[SP500Membership]:
     rows = _as_rows(await client.get("/historical-sp-500", {}, ttl=TTL.REFERENCE))
     return _parse(rows, SP500Membership, "/historical-sp-500")
+
+
+async def etf_search(
+    client: FmpClient,
+    *,
+    sector: str | None = None,
+    industry: str | None = None,
+    exchanges: list[str] | None = None,
+    limit: int = 10000,
+) -> list[ScreenerRow]:
+    """ETFs matching a sector/industry filter via /company-screener?isEtf=true.
+
+    FMP exposes ETFs through the same screener as equities; the `isEtf=true`
+    parameter restricts results. If FMP ever changes that flag, callers can
+    fall back to a client-side `Profile.is_etf` filter.
+    """
+    params: dict[str, Any] = {"limit": limit, "country": "US", "isEtf": "true"}
+    if sector:
+        params["sector"] = sector
+    if industry:
+        params["industry"] = industry
+    if exchanges:
+        params["exchange"] = ",".join(exchanges)
+    rows = _as_rows(await client.get("/company-screener", params, ttl=TTL.SNAPSHOT))
+    return _parse(rows, ScreenerRow, "/company-screener")
+
+
+async def etf_info(client: FmpClient, symbol: str) -> EtfProfile | None:
+    """Fetch ETF metadata (expense ratio, AUM, inception, asset class).
+
+    Tries /etf/info first (stable namespace), falls back to /etf-info, then
+    finally to /profile-extracted fields — whichever returns a usable row.
+    """
+    for endpoint in ("/etf/info", "/etf-info"):
+        try:
+            payload = await client.get(endpoint, {"symbol": symbol}, ttl=TTL.REFERENCE)
+        except MiuApiError:
+            continue
+        rows = _as_rows(payload)
+        if rows:
+            parsed = _parse(rows[:1], EtfProfile, endpoint)
+            return parsed[0] if parsed else None
+    # Last resort: build a thin EtfProfile from /profile so callers always get
+    # at least a symbol/name back.
+    p = await profile(client, symbol)
+    if p is None:
+        return None
+    return EtfProfile(
+        symbol=p.symbol,
+        name=p.company_name,
+        sector=p.sector,
+        exchange=p.exchange,
+        exchange_short_name=p.exchange_short_name,
+        country=p.country,
+    )
+
+
+async def etf_holdings(client: FmpClient, symbol: str) -> list[EtfHolding]:
+    """Fetch an ETF's holdings panel."""
+    for endpoint in ("/etf/holdings", "/etf-holdings"):
+        try:
+            payload = await client.get(endpoint, {"symbol": symbol}, ttl=TTL.REFERENCE)
+        except MiuApiError:
+            continue
+        rows = _as_rows(payload)
+        if not rows:
+            continue
+        # /etf/holdings rows sometimes omit `symbol`; inject it for the model.
+        for r in rows:
+            r.setdefault("symbol", symbol)
+        return _parse(rows, EtfHolding, endpoint)
+    return []

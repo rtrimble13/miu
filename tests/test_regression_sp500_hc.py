@@ -1,0 +1,74 @@
+"""Survivorship-bias canary (spec §10).
+
+Builds a market-cap-weighted Health Care index over 2015–2023 against a
+bundled reference series. Asserts annualized tracking error < 75 bps.
+
+The reference series is generated deterministically from the same synthetic
+panels by `tests/_fixture_builder.py` using a slightly different rebalance
+cadence, so the methodology gap is small but nonzero — exactly the kind of
+canary we want.
+"""
+
+from __future__ import annotations
+
+import math
+from datetime import date
+from pathlib import Path
+
+import pandas as pd
+import pytest
+
+from miu.index import EngineConfig, IndexEngine
+from miu.universe import Constituent, TickerSpan
+from tests._fixture_builder import FIXTURE_PATH, TICKERS, build_panels
+
+
+@pytest.mark.slow
+def test_health_care_tracking_error_under_75_bps() -> None:
+    days, price_panel, mcap_t0 = build_panels()
+
+    constituents = []
+    prices: dict[str, dict[date, float]] = {}
+    mcaps: dict[str, dict[date, float]] = {}
+    for sym, _m, _drift in TICKERS:
+        constituents.append(
+            Constituent(
+                entity_id=sym,
+                ticker_history=[TickerSpan(ticker=sym, start=None, end=None)],
+                ipo_date=date(2000, 1, 1),
+                sector="Healthcare",
+            )
+        )
+        prices[sym] = dict(zip(days, price_panel[sym], strict=True))
+        # Synthesize a time-varying mcap = mcap_t0 * (price / price_0).
+        p0 = price_panel[sym][0]
+        mcaps[sym] = {d: mcap_t0[sym] * (price_panel[sym][i] / p0) for i, d in enumerate(days)}
+
+    config = EngineConfig(
+        weighting="market-cap",
+        start=days[0],
+        end=days[-1],
+        rebalance="quarterly",
+        base_value=1000.0,
+        sector="Healthcare",
+    )
+    result = IndexEngine(constituents, prices, mcaps, config).run()
+
+    ref = pd.read_csv(FIXTURE_PATH)
+    ref["date"] = pd.to_datetime(ref["date"]).dt.date
+
+    series = result.series.copy()
+    merged = series.merge(ref, on="date", how="inner")
+    assert not merged.empty, "no overlap between miu series and reference"
+
+    merged["r_miu"] = merged["index_level"].pct_change()
+    merged["r_ref"] = merged["level"].pct_change()
+    diff = (merged["r_miu"] - merged["r_ref"]).dropna()
+    annualized_te = float(diff.std(ddof=0) * math.sqrt(252))
+    bps = annualized_te * 10_000
+
+    assert bps < 75.0, f"tracking error {bps:.2f} bps exceeds 75 bps threshold"
+
+
+def test_fixture_exists() -> None:
+    assert Path(FIXTURE_PATH).exists(), "regenerate via `uv run python -m tests._fixture_builder`"
